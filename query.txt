@@ -1,0 +1,38 @@
+
+select *
+from customer c
+inner join sale s on c.id = s.customer_id;
+
+customer ++ sale: [cutomer::id == sale::customer_id]
+
+select *
+from customer
+where id = 10;
+
+customer[id == 10]
+
+select firstname + " " + surname as fullname
+from customer
+
+customer = [{
+  firstname: "muhmud",
+  surname: "ahmad"
+},
+{
+  firstname: "beem",
+  surname: "usmani"
+}]
+
+customer -> [
+  firstname
+]
+
+[ "muhmud", "beem" ]
+
+customer -> {
+  fullname: firstname + " " + surname
+}
+
+[[ a, b, c ]]
+
+[ a, b, c ]

@@ -1,0 +1,14 @@
+[workspace]
+members = [ "crates/*" ]
+
+[workspace.package]
+name = "dql"
+description = "an experiment in data querying"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1.0.71"
+thiserror = "1.0.40"
+serde_json = { features = ["preserve_order", "unbounded_depth"], version = "1.0.96" }
