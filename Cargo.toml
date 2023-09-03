@@ -2,7 +2,6 @@
 members = [ "crates/*" ]
 
 [workspace.package]
-name = "dql"
 description = "an experiment in data querying"
 version = "0.1.0"
 edition = "2021"

@@ -4,14 +4,14 @@ use chrono::{DateTime, Utc};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{alpha1, alphanumeric1, digit1, multispace0};
-use nom::combinator::{map_res, opt, recognize};
-use nom::error::ParseError;
-use nom::multi::many0_count;
-use nom::sequence::{delimited, pair, separated_pair, tuple};
+use nom::combinator::{map, map_res, opt, recognize};
+use nom::multi::{many0_count, separated_list1};
+use nom::sequence::{delimited, pair, separated_pair};
 use nom::IResult;
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
+#[derive(Debug)]
 pub enum Data {
     Null,
 
@@ -130,18 +130,27 @@ pub struct DataEnvironment {
     pub data_stores: HashMap<String, Box<dyn DataStore>>,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum PathElement {
     Named(String),
     Wildcard,
 }
 
+pub struct Path {
+    pub data_source: Option<String>,
+    pub elements: Vec<PathElement>,
+}
+
+#[derive(Debug)]
 pub enum PredicateComponentType {
     Current,
     Literal(Data),
 }
 
+#[derive(Debug)]
 pub enum PredicateComparisonType {
     Equals,
+    NotEquals,
     LessThan,
     LessThanOrEquals,
     GreaterThan,
@@ -150,6 +159,7 @@ pub enum PredicateComparisonType {
 
 // name[== "abc"]
 // id[? > 23]
+#[derive(Debug)]
 pub enum PredicateExpression {
     Or(Box<PredicateExpression>, Box<PredicateExpression>),
     And(Box<PredicateExpression>, Box<PredicateExpression>),
@@ -196,7 +206,7 @@ where
     delimited(multispace0, inner, multispace0)
 }
 
-pub fn identifier(input: &str) -> IResult<&str, &str> {
+pub fn undelimited_identifier(input: &str) -> IResult<&str, &str> {
     ws(recognize(pair(
         alt((alpha1, tag("_"))),
         many0_count(alt((alphanumeric1, tag("_"), tag("-")))),
@@ -204,14 +214,18 @@ pub fn identifier(input: &str) -> IResult<&str, &str> {
 }
 
 pub fn delimited_identifier(input: &str) -> IResult<&str, &str> {
-    ws(delimited(tag("`"), identifier, tag("`")))(input)
+    ws(delimited(tag("`"), undelimited_identifier, tag("`")))(input)
+}
+
+pub fn identifier(input: &str) -> IResult<&str, &str> {
+    alt((undelimited_identifier, delimited_identifier))(input)
 }
 
 pub fn int(input: &str) -> IResult<&str, i64> {
     map_res(digit1, |s: &str| s.parse::<i64>())(input)
 }
 
-pub fn range_path_filter(input: &str) -> IResult<&str, (Option<i64>, Option<i64>)> {
+pub fn range_path_range(input: &str) -> IResult<&str, (Option<i64>, Option<i64>)> {
     separated_pair(opt(int), tag(":"), opt(int))(input)
 }
 
@@ -219,40 +233,21 @@ pub fn range_path_index(input: &str) -> IResult<&str, i64> {
     int(input)
 }
 
-pub fn object_query(input: &str) -> IResult<&str, Query> {
-    let (mut input, _) = ws(tag("{"))(input)?;
-    let mut fields: Vec<(String, QueryValue)> = vec![];
-
-    if let Ok((i, (_, _, _))) = tuple((opt(ws(tag("*"))), opt(ws(tag(","))), ws(tag("}"))))(input) {
-        return Ok((i, Query::Object(Box::new(fields))));
-    }
-
-    loop {
-        if let Ok((i, _)) = ws(tag("}"))(input) {
-            return Ok((i, Query::Object(Box::new(fields))));
-        }
-        if let Ok((i, (field_name, _))) = tuple((ws(identifier), opt(ws(tag(",")))))(input) {
-            let path = vec![PathComponent {
-                element: PathElement::Named(field_name.to_owned()),
-                filter: None,
-            }];
-            fields.push((field_name.to_owned(), QueryValue::Path(Box::new(path))));
-            input = i;
-        } else if let Ok((i, field_name)) = tuple((ws(identifier), ws(tag(":")), ws(tag("\""))))
-    }
-}
-
-pub fn parse_query(input: &str) -> IResult<&str, QueryRequest> {
-    let (input, data_store) = alt((opt(identifier), opt(delimited_identifier)))(input)?;
-    let vec: Vec<(String, QueryValue)> = vec![];
-
-    Ok((
-        input,
-        QueryRequest {
-            data_store: data_store.map(ToOwned::to_owned),
-            query: Query::Object(Box::new(vec)),
+pub fn path(input: &str) -> IResult<&str, Path> {
+    let (input, data_source) = opt(nom::sequence::terminated(identifier, tag("::")))(input)?;
+    map(
+        map(separated_list1(tag("/"), identifier), |elements| {
+            elements
+                .iter()
+                .map(ToString::to_string)
+                .map(PathElement::Named)
+                .collect()
+        }),
+        move |elements| Path {
+            data_source: data_source.map(|s| s.to_string()),
+            elements,
         },
-    ))
+    )(input)
 }
 
 #[cfg(test)]
@@ -274,10 +269,54 @@ mod tests {
     #[test]
     fn parsing_range_filter_works_correctly() {
         assert_eq!(
-            range_path_filter("123:456"),
+            range_path_range("123:456"),
             Ok(("", (Some(123), Some(456))))
         );
-        assert_eq!(range_path_filter("1:"), Ok(("", (Some(1), None))));
-        assert_eq!(range_path_filter(":2"), Ok(("", (None, Some(2)))));
+        assert_eq!(range_path_range("1:"), Ok(("", (Some(1), None))));
+        assert_eq!(range_path_range(":2"), Ok(("", (None, Some(2)))));
+    }
+
+    #[test]
+    fn parsing_path_works_correctly() {
+        if let Ok((_, parsed_path)) = path("customer::name") {
+            assert_eq!(parsed_path.data_source.unwrap(), "customer");
+            assert_eq!(parsed_path.elements.len(), 1);
+            assert_eq!(
+                parsed_path.elements[0],
+                PathElement::Named(str::to_string("name"))
+            );
+        } else {
+            panic!("could not parse path");
+        }
+
+        if let Ok((_, parsed_path)) = path("customer::details/name") {
+            assert_eq!(parsed_path.data_source.unwrap(), "customer");
+            assert_eq!(parsed_path.elements.len(), 2);
+            assert_eq!(
+                parsed_path.elements[0],
+                PathElement::Named(str::to_string("details"))
+            );
+            assert_eq!(
+                parsed_path.elements[1],
+                PathElement::Named(str::to_string("name"))
+            );
+        } else {
+            panic!("could not parse path");
+        }
+
+        if let Ok((_, parsed_path)) = path("details/name") {
+            assert_eq!(parsed_path.data_source, None);
+            assert_eq!(parsed_path.elements.len(), 2);
+            assert_eq!(
+                parsed_path.elements[0],
+                PathElement::Named(str::to_string("details"))
+            );
+            assert_eq!(
+                parsed_path.elements[1],
+                PathElement::Named(str::to_string("name"))
+            );
+        } else {
+            panic!("could not parse path");
+        }
     }
 }
